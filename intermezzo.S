@@ -5,45 +5,39 @@
 .globl _start
 
 .section ".text"
+//.section ".textrwx", "awx"
 _start:
-
     // First, we'll need to move ourselves _out_ of the target area. 
     // We'll copy down into the IRAM.
-    // the post relocation code will live at 0x40009000
-    ldr r0, =INTERMEZZO_RELOCATED_ADDRESS
-    ldr r1, =post_relocation
-    ldr r2, =intermezzo_end
-    sub r2, r2, r1
+    // the post relocation code will live at -0x1000
+    ldr r0, #intermezzo_reloc_addr
+    ldr r1, #post_relocation
+    mov r2, #(intermezzo_end - post_relocation)
+    //sub r2, r2, r1
     bl  copy
 
     // Jump to the start of RAM, which should now contain the post-relocation code.
-    ldr r0, =INTERMEZZO_RELOCATED_ADDRESS
+    ldr r0, #intermezzo_reloc_addr
     bx  r0
 
 
 .align 4
 // executes at 0x40009000 // overwriting stack?
 post_relocation:
-
-    // Next, we'll copy our payload down to the appropriate relocaiton address.
     // Relocate part 1 of payload.
-    ldr r0, =RELOCATION_TARGET // 0x4000A000
-    ldr r1, =PAYLOAD_START_ADDR // 0x4000AE40
-    ldr r2, =BEFORE_SPRAY_LENGTH // 0x4E00
+    ldr r0, #rcm_payload_start // 0x4000A000
+    ldr r1, #payload_start // 0x4000AE40
+    ldr r2, #payload_size1 // 0x4E00
     bl  copy
 
     // Relocated part 2 of payload
-    /*
-    ldr r0, =RELOCATION_TARGET // 0x4000A000
-    ldr r1, =BEFORE_SPRAY_LENGTH // 0x4E00
-    add r0, r0, r1 // 0x4000EE00
-    ldr r1, =STACK_SPRAY_END // 0x4000F000
-    ldr r2, =AFTER_SPRAY_LENGTH
+    // r0 points to right address after the first part of payload after copy
+    ldr r1, #spray_end // 0x4E00
+    ldr r2, #payload_size2
     bl  copy
-    */
 
     // Finally, jump into the relocated target.
-    ldr r0, =ENTRY_POINT_ADDRESS // 0x4000A000
+    ldr r0, #rcm_payload_start // 0x4000A000
     bx r0
 
 
@@ -67,3 +61,31 @@ copy:
     // Once we're done, return.
     bx lr
 
+.align 8, 0 // pad to 2^8 = 256 = 0x100
+
+    .globl intermezzo_reloc_addr
+intermezzo_reloc_addr:
+    .word 0x40009000
+
+    .globl rcm_payload_start
+rcm_payload_start:
+    .word 0x4000A000
+
+    .globl payload_start
+payload_start:
+    .word 0x4000AE40
+
+    .globl payload_size1
+payload_size1:
+    .word 0x300
+
+    .globl spray_end
+spray_end:
+    .word 0x4000b000
+
+    .globl payload_size2
+payload_size2:
+    .word 0x450
+
+    .globl intermezzo_end
+intermezzo_end:
