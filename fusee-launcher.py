@@ -26,17 +26,17 @@ for dev in devs:
         #print( dir(dev))
         print('VendorID=' + hex(dev.idVendor) + ' & ProductID=' + hex(dev.idProduct))
         if dev.idProduct in T20_PIDS:
-            rcm_device = T20(pid=NVIDIA_VID, vid=dev.idProduct)
+            rcm_device = T20(vid=NVIDIA_VID, pid=dev.idProduct)
         elif dev.idProduct in T30_PIDS:
-            rcm_device = T30(pid=NVIDIA_VID, vid=dev.idProduct)
+            rcm_device = T30(vid=NVIDIA_VID, pid=dev.idProduct)
         elif dev.idProduct in T114_PIDS:
-            rcm_device = T114(pid=NVIDIA_VID, vid=dev.idProduct)
+            rcm_device = T114(vid=NVIDIA_VID, pid=dev.idProduct)
         elif dev.idProduct in T124_PIDS:
-            rcm_device = T124(pid=NVIDIA_VID, vid=dev.idProduct)
+            rcm_device = T124(vid=NVIDIA_VID, pid=dev.idProduct)
         elif dev.idProduct in T132_PIDS:
-            rcm_device = T132(pid=NVIDIA_VID, vid=dev.idProduct)
+            rcm_device = T132(vid=NVIDIA_VID, pid=dev.idProduct)
         elif dev.idProduct in T210_PIDS:
-            rcm_device = T210(pid=NVIDIA_VID, vid=dev.idProduct)
+            rcm_device = T210(vid=NVIDIA_VID, pid=dev.idProduct)
     except IOError as e:
         print(e)
         sys.exit(-1)

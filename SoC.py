@@ -51,7 +51,7 @@ class T114(RCMHax):
 
         self.STACK_END           = self.RCM_PAYLOAD_ADDR
         self.STACK_SPRAY_END     = self.STACK_END
-        self.STACK_SPRAY_START   = self.STACK_SPRAY_END - 0x200 # 512 Byte should be enough? #0x40009E40
+        self.STACK_SPRAY_START   = self.STACK_SPRAY_END - 0x1100 # Analyse me further
 
         # The address where the user payload is expected to begin.
         # A reasonable offset allows Intermezzo to grow without problems
