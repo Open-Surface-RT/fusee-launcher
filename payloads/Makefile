@@ -23,20 +23,23 @@ CFLAGS = \
 
 LDFLAGS = -nostdlib -L /usr/lib/gcc/arm-none-eabi/9.2.1 -lgcc -Map=$(basename $@).map
 
-OBJS = tegra30_uart.o printf.o
+OBJS = tegra30_uart.o # printf.o
 
-ENTRY_POINT_ADDRESS := 0x4000A000
+ENTRY_POINT_ADDRESS := 0x4000E000
 
 # Provide the definitions used in the intermezzo stub.
 DEFINES := \
 	-DENTRY_POINT_ADDRESS=$(ENTRY_POINT_ADDRESS)
 
-all: patch_irom.bin dump_irom.bin
+all: patch_irom.bin dump-sbk-via-usb.bin
 
 %.elf: %.o $(OBJS)
 	$(LD) $^ -T common.lds --defsym LOAD_ADDR=$(ENTRY_POINT_ADDRESS) $(LDFLAGS) -o $@
 
 %.o: %.c
+	$(CC) $(CFLAGS) $< -c -o $@
+
+%.o: %.S
 	$(CC) $(CFLAGS) $< -c -o $@
 
 %.bin: %.elf
