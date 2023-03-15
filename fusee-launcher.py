@@ -26,16 +26,22 @@ for dev in devs:
         #print( dir(dev))
         print('VendorID=' + hex(dev.idVendor) + ' & ProductID=' + hex(dev.idProduct))
         if dev.idProduct in T20_PIDS:
+            print("detected a T20")
             rcm_device = T20(vid=NVIDIA_VID, pid=dev.idProduct)
         elif dev.idProduct in T30_PIDS:
+            print("detected a T30")
             rcm_device = T30(vid=NVIDIA_VID, pid=dev.idProduct)
         elif dev.idProduct in T114_PIDS:
+            print("detected a T114")
             rcm_device = T114(vid=NVIDIA_VID, pid=dev.idProduct)
         elif dev.idProduct in T124_PIDS:
+            print("detected a T124")
             rcm_device = T124(vid=NVIDIA_VID, pid=dev.idProduct)
         elif dev.idProduct in T132_PIDS:
+            print("detected a T132")
             rcm_device = T132(vid=NVIDIA_VID, pid=dev.idProduct)
         elif dev.idProduct in T210_PIDS:
+            print("detected a T210")
             rcm_device = T210(vid=NVIDIA_VID, pid=dev.idProduct)
     except IOError as e:
         print(e)
@@ -77,3 +83,12 @@ except IOError:
     print("The USB device stopped responding-- sure smells like we've smashed its stack. :)")
     print("Launch complete!")
 
+print("Listening to incoming USB Data:")
+print("-------------------------------")
+while True:
+    buf = rcm_device.read(0x1000)
+    print(buf.hex())
+    try:
+        print(buf.decode('utf-8'))
+    except UnicodeDecodeError:
+        pass
